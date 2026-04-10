@@ -6,6 +6,9 @@ import pandas as pd
 # =========================================================
 df = pd.read_csv("data/raw/premier-league-matches.csv")
 
+# Sort chronologically — needed for rolling strength calculation
+df = df.sort_values(["Season_End_Year", "Wk", "Date"]).reset_index(drop=True)
+
 print("\nDataset loaded successfully")
 print(df.head(10))
 print("\nShape:", df.shape)
@@ -47,7 +50,7 @@ def get_points(row, team):
 # 4) Build a team-level table from home matches
 # Each row represents the points earned by the home team
 # =========================================================
-home_df = df[["Season_End_Year", "HomeTeam", "AwayTeam", "FTR"]].copy()
+home_df = df[["Season_End_Year", "Wk", "HomeTeam", "AwayTeam", "FTR"]].copy()
 home_df["Team"] = home_df["HomeTeam"]
 home_df["Points"] = home_df.apply(
     lambda row: get_points(row, row["HomeTeam"]),
@@ -59,7 +62,7 @@ home_df["Points"] = home_df.apply(
 # 5) Build the same thing for away matches
 # This time each row represents the away team's points
 # =========================================================
-away_df = df[["Season_End_Year", "HomeTeam", "AwayTeam", "FTR"]].copy()
+away_df = df[["Season_End_Year", "Wk", "HomeTeam", "AwayTeam", "FTR"]].copy()
 away_df["Team"] = away_df["AwayTeam"]
 away_df["Points"] = away_df.apply(
     lambda row: get_points(row, row["AwayTeam"]),
@@ -72,9 +75,9 @@ away_df["Points"] = away_df.apply(
 # Now we have one dataset with all teams and all points won
 # =========================================================
 teams_df = pd.concat([
-    home_df[["Season_End_Year", "Team", "Points"]],
-    away_df[["Season_End_Year", "Team", "Points"]]
-])
+    home_df[["Season_End_Year", "Wk", "Team", "Points"]],
+    away_df[["Season_End_Year", "Wk", "Team", "Points"]]
+]).sort_values(["Team", "Season_End_Year", "Wk"]).reset_index(drop=True)
 
 print("\nCombined team-level dataset:")
 print(teams_df.head())
@@ -82,26 +85,32 @@ print(teams_df.head())
 
 # =========================================================
 # 7) Compute team strength by season
-# Here, strength = average points per match
+# Here, strength = rolling average points over last 5 matches
+# shift(1) ensures we only use matches played BEFORE the current one
 # =========================================================
-team_strength = teams_df.groupby(["Season_End_Year", "Team"]).agg(
-    TotalPoints=("Points", "sum"),
-    Matches=("Points", "count")
-).reset_index()
+WINDOW = 5
 
-team_strength["Strength"] = team_strength["TotalPoints"] / team_strength["Matches"]
+teams_df["Strength"] = (
+    teams_df
+    .groupby("Team")["Points"]
+    .transform(lambda x: x.shift(1).rolling(window=WINDOW, min_periods=1).mean())
+)
+
+# Fill NaN (first matches with no history) with the team's season average
+season_avg = teams_df.groupby(["Season_End_Year", "Team"])["Points"].transform("mean")
+teams_df["Strength"] = teams_df["Strength"].fillna(season_avg)
 
 print("\nTeam strength by season:")
-print(team_strength.head())
+print(teams_df.head())
 
 
 # =========================================================
 # 8) Merge home team strength back into the main dataset
 # =========================================================
 df = df.merge(
-    team_strength[["Season_End_Year", "Team", "Strength"]],
-    left_on=["Season_End_Year", "HomeTeam"],
-    right_on=["Season_End_Year", "Team"],
+    teams_df[["Season_End_Year", "Wk", "Team", "Strength"]],
+    left_on=["Season_End_Year", "Wk", "HomeTeam"],
+    right_on=["Season_End_Year", "Wk", "Team"],
     how="left"
 ).rename(columns={"Strength": "HomeStrength"}).drop(columns=["Team"])
 
@@ -110,9 +119,9 @@ df = df.merge(
 # 9) Merge away team strength into the main dataset
 # =========================================================
 df = df.merge(
-    team_strength[["Season_End_Year", "Team", "Strength"]],
-    left_on=["Season_End_Year", "AwayTeam"],
-    right_on=["Season_End_Year", "Team"],
+    teams_df[["Season_End_Year", "Wk", "Team", "Strength"]],
+    left_on=["Season_End_Year", "Wk", "AwayTeam"],
+    right_on=["Season_End_Year", "Wk", "Team"],
     how="left"
 ).rename(columns={"Strength": "AwayStrength"}).drop(columns=["Team"])
 
@@ -129,17 +138,24 @@ print(df[["HomeTeam", "AwayTeam", "HomeStrength", "AwayStrength", "StrengthDiff"
 
 
 # =========================================================
-# 11) Final check on the new variables
-# Making sure everything looks normal!
+# 11) Create additional variables for the analysis
+# HomeWin = 1 if home team wins, 0 otherwise (our target variable)
+# Covid = 1 for seasons played without fans (2020 and 2021)
 # =========================================================
+df["HomeWin"] = (df["FTR"] == "H").astype(int)
+df["Covid"] = df["Season_End_Year"].isin([2020, 2021]).astype(int)
+
 print("\nSummary statistics for strength variables:")
 print(df[["HomeStrength", "AwayStrength", "StrengthDiff"]].describe())
+
+print("\nHome win rate (overall):", df["HomeWin"].mean().round(3))
+print("Home win rate (Covid):", df[df["Covid"]==1]["HomeWin"].mean().round(3))
+print("Home win rate (non-Covid):", df[df["Covid"]==0]["HomeWin"].mean().round(3))
 
 
 # =========================================================
 # 12) Save final dataset (ready for analysis/modeling)
 # =========================================================
-
 output_path = "data/processed/epl_strength.csv"
 
 os.makedirs(os.path.dirname(output_path), exist_ok=True)
