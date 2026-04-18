@@ -20,14 +20,24 @@ print(df.isna().sum())
 
 # =========================================================
 # 2) Clean column names
-# Just making them more standard and easier to work with
 # =========================================================
 df = df.rename(columns={
     "Home": "HomeTeam",
     "Away": "AwayTeam",
-    "HomeGoals": "FTHG",
-    "AwayGoals": "FTAG"
+    "HomeGoals": "HomeGoals",   # kept explicit for clarity
+    "AwayGoals": "AwayGoals"
 })
+
+# Robustness: handle both possible input column names
+if "HomeGoals" not in df.columns and "FTHG" in df.columns:
+    df = df.rename(columns={"FTHG": "HomeGoals", "FTAG": "AwayGoals"})
+elif "HomeGoals" not in df.columns:
+    # Fallback: original raw column names
+    df = df.rename(columns={
+        "Home": "HomeTeam",
+        "Away": "AwayTeam",
+    })
+    # HomeGoals / AwayGoals already named correctly in raw
 
 print("\nRenamed columns:")
 print(df.columns)
@@ -48,7 +58,6 @@ def get_points(row, team):
 
 # =========================================================
 # 4) Build a team-level table from home matches
-# Each row represents the points earned by the home team
 # =========================================================
 home_df = df[["Season_End_Year", "Wk", "HomeTeam", "AwayTeam", "FTR"]].copy()
 home_df["Team"] = home_df["HomeTeam"]
@@ -60,7 +69,6 @@ home_df["Points"] = home_df.apply(
 
 # =========================================================
 # 5) Build the same thing for away matches
-# This time each row represents the away team's points
 # =========================================================
 away_df = df[["Season_End_Year", "Wk", "HomeTeam", "AwayTeam", "FTR"]].copy()
 away_df["Team"] = away_df["AwayTeam"]
@@ -72,7 +80,6 @@ away_df["Points"] = away_df.apply(
 
 # =========================================================
 # 6) Put both tables together
-# Now we have one dataset with all teams and all points won
 # =========================================================
 teams_df = pd.concat([
     home_df[["Season_End_Year", "Wk", "Team", "Points"]],
@@ -85,8 +92,7 @@ print(teams_df.head())
 
 # =========================================================
 # 7) Compute team strength by season
-# Here, strength = rolling average points over last 5 matches
-# shift(1) ensures we only use matches played BEFORE the current one
+# Rolling average points over last 5 matches (before current match)
 # =========================================================
 WINDOW = 5
 
@@ -96,8 +102,8 @@ teams_df["Strength"] = (
     .transform(lambda x: x.shift(1).rolling(window=WINDOW, min_periods=1).mean())
 )
 
-# Fill NaN (first match per team, no prior history) with the team's season average
-# This only affects week 1 — acceptable for descriptive analysis
+# Fill NaN (first match per team) with season average
+# Note: this uses future matches to impute week 1 — acceptable for descriptive analysis
 teams_df["SeasonAvg"] = teams_df.groupby(["Season_End_Year", "Team"])["Points"].transform("mean")
 teams_df["Strength"] = teams_df["Strength"].fillna(teams_df["SeasonAvg"])
 teams_df = teams_df.drop(columns=["SeasonAvg"])
@@ -127,8 +133,8 @@ df = df.merge(
 
 # =========================================================
 # 10) Create the strength difference variable
-# Positive value = home team is stronger on paper
-# Negative value = away team is stronger
+# Positive = home team stronger on paper
+# Negative = away team stronger
 # =========================================================
 df["StrengthDiff"] = df["HomeStrength"] - df["AwayStrength"]
 
@@ -137,23 +143,44 @@ print(df[["HomeTeam", "AwayTeam", "HomeStrength", "AwayStrength", "StrengthDiff"
 
 
 # =========================================================
-# 11) Create additional variables for the analysis
-# HomeWin = 1 if home team wins, 0 otherwise (our target variable)
-# Covid = 1 for seasons played without fans (2020 and 2021)
+# 11) Create target and control variables
 # =========================================================
-df["HomeWin"] = (df["FTR"] == "H").astype(int)
-df["Covid"] = df["Season_End_Year"].isin([2020, 2021]).astype(int)
+df["HomeWin"]    = (df["FTR"] == "H").astype(int)
+df["Covid"]      = df["Season_End_Year"].isin([2020, 2021]).astype(int)
+
+# --- NEW: goal variables ---
+df["TotalGoals"] = df["HomeGoals"] + df["AwayGoals"]   # total goals per match
+df["GoalDiff"]   = df["HomeGoals"] - df["AwayGoals"]   # positive = home advantage in goals
 
 print("\nSummary statistics for strength variables:")
 print(df[["HomeStrength", "AwayStrength", "StrengthDiff"]].describe())
 
-print("\nHome win rate (overall):", df["HomeWin"].mean().round(3))
-print("Home win rate (Covid):", df[df["Covid"]==1]["HomeWin"].mean().round(3))
-print("Home win rate (non-Covid):", df[df["Covid"]==0]["HomeWin"].mean().round(3))
+print("\nSummary statistics for goal variables:")
+print(df[["HomeGoals", "AwayGoals", "TotalGoals", "GoalDiff"]].describe())
+
+print("\nHome win rate (overall):",    df["HomeWin"].mean().round(3))
+print("Home win rate (Covid):",       df[df["Covid"] == 1]["HomeWin"].mean().round(3))
+print("Home win rate (non-Covid):",   df[df["Covid"] == 0]["HomeWin"].mean().round(3))
+
+print("\nAvg goals at home:",  df["HomeGoals"].mean().round(3))
+print("Avg goals away:",       df["AwayGoals"].mean().round(3))
+print("Avg total goals/game:", df["TotalGoals"].mean().round(3))
 
 
 # =========================================================
-# 12) Save final dataset (ready for analysis/modeling)
+# 12) Final column order (clean and readable)
+# =========================================================
+df = df[[
+    "Season_End_Year", "Wk", "Date",
+    "HomeTeam", "AwayTeam", "FTR",
+    "HomeGoals", "AwayGoals", "TotalGoals", "GoalDiff",
+    "HomeStrength", "AwayStrength", "StrengthDiff",
+    "HomeWin", "Covid"
+]]
+
+
+# =========================================================
+# 13) Save final dataset (ready for analysis/modeling)
 # =========================================================
 output_path = "data/processed/epl_strength.csv"
 
@@ -161,3 +188,5 @@ os.makedirs(os.path.dirname(output_path), exist_ok=True)
 df.to_csv(output_path, index=False)
 
 print(f"\nDataset saved successfully at: {output_path}")
+print(f"Final shape: {df.shape}")
+print(f"\nFinal columns:\n{list(df.columns)}")
