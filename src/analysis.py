@@ -212,7 +212,151 @@ print("→ Figure 5 sauvegardée")
 
 
 # =========================================================
-# 6) Résumé chiffré final
+# 6) Top équipes avec le meilleur avantage domicile
+# Critère : différence entre taux de victoire HOME et AWAY
+# (uniquement équipes ayant joué au moins 3 saisons en PL)
+# =========================================================
+
+# Nombre de saisons disputées par équipe
+seasons_per_team = df.groupby("HomeTeam")["Season_End_Year"].nunique()
+teams_3plus = seasons_per_team[seasons_per_team >= 3].index
+
+# Taux victoire à domicile (en tant qu'équipe domicile)
+home_win_rate = (
+    df[df["HomeTeam"].isin(teams_3plus)]
+    .groupby("HomeTeam")["HomeWin"].mean()
+    .rename("HomeWinRate")
+)
+
+# Taux victoire à l'extérieur (quand cette équipe joue away)
+df["AwayWin"] = (df["FTR"] == "A").astype(int)
+away_win_rate = (
+    df[df["AwayTeam"].isin(teams_3plus)]
+    .groupby("AwayTeam")["AwayWin"].mean()
+    .rename("AwayWinRate")
+)
+
+# Avantage domicile = différence entre les deux taux
+team_advantage = pd.concat([home_win_rate, away_win_rate], axis=1).dropna()
+team_advantage["HomeAdvantage"] = team_advantage["HomeWinRate"] - team_advantage["AwayWinRate"]
+team_advantage = team_advantage.sort_values("HomeAdvantage", ascending=False)
+
+top_n    = 15
+top_teams = team_advantage.head(top_n).reset_index()
+top_teams.columns = ["Team", "HomeWinRate", "AwayWinRate", "HomeAdvantage"]
+
+print("\n--- Top 15 équipes : avantage domicile ---")
+print(top_teams[["Team", "HomeWinRate", "AwayWinRate", "HomeAdvantage"]].to_string(index=False))
+
+fig, ax = plt.subplots(figsize=(10, 6))
+y = np.arange(top_n)
+ax.barh(y, top_teams["HomeWinRate"] * 100, height=0.4,
+        color=COLORS["Home"], label="Victoires à domicile", align="center")
+ax.barh(y - 0.4, top_teams["AwayWinRate"] * 100, height=0.4,
+        color=COLORS["Away"], label="Victoires à l'extérieur", align="center")
+ax.set_yticks(y - 0.2)
+ax.set_yticklabels(top_teams["Team"], fontsize=9)
+ax.xaxis.set_major_formatter(mtick.PercentFormatter())
+ax.set_xlabel("Taux de victoire")
+ax.set_title(f"Top {top_n} équipes : écart victoires domicile vs extérieur\n(équipes ayant joué ≥ 3 saisons en PL)",
+             fontsize=12, fontweight="bold")
+ax.legend(loc="lower right")
+ax.invert_yaxis()
+plt.tight_layout()
+plt.savefig("outputs/figures/06_top_teams_home_advantage.png", dpi=150)
+plt.close()
+print("→ Figure 6 sauvegardée")
+
+
+# =========================================================
+# 7) Big Six : comparaison domicile vs extérieur
+# Pour chaque club : taux victoire home/away + buts moyens
+# =========================================================
+
+BIG_SIX = ["Arsenal", "Chelsea", "Liverpool",
+           "Manchester City", "Manchester Utd", "Tottenham"]
+
+# Résultats quand le Big Six joue à domicile
+big6_home = (
+    df[df["HomeTeam"].isin(BIG_SIX)]
+    .groupby("HomeTeam")
+    .agg(
+        HomeWinRate=("HomeWin", "mean"),
+        AvgHomeGoals=("HomeGoals", "mean"),
+        AvgConcededHome=("AwayGoals", "mean")
+    )
+    .reset_index()
+    .rename(columns={"HomeTeam": "Team"})
+)
+
+# Résultats quand le Big Six joue à l'extérieur
+big6_away = (
+    df[df["AwayTeam"].isin(BIG_SIX)]
+    .groupby("AwayTeam")
+    .agg(
+        AwayWinRate=("AwayWin", "mean"),
+        AvgAwayGoals=("AwayGoals", "mean"),
+        AvgConcededAway=("HomeGoals", "mean")
+    )
+    .reset_index()
+    .rename(columns={"AwayTeam": "Team"})
+)
+
+big6 = big6_home.merge(big6_away, on="Team")
+big6 = big6.sort_values("HomeWinRate", ascending=False).reset_index(drop=True)
+
+print("\n--- Big Six : domicile vs extérieur ---")
+print(big6[["Team", "HomeWinRate", "AwayWinRate", "AvgHomeGoals", "AvgAwayGoals"]].to_string(index=False))
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+x = np.arange(len(BIG_SIX))
+width = 0.35
+
+# Sous-graphe 1 : taux de victoire
+axes[0].bar(x - width/2, big6["HomeWinRate"] * 100, width,
+            color=COLORS["Home"], label="À domicile", edgecolor="white")
+axes[0].bar(x + width/2, big6["AwayWinRate"] * 100, width,
+            color=COLORS["Away"], label="À l'extérieur", edgecolor="white")
+for i, row in big6.iterrows():
+    axes[0].text(i - width/2, row["HomeWinRate"] * 100 + 0.5,
+                 f"{row['HomeWinRate']*100:.0f}%", ha="center", fontsize=8, fontweight="bold")
+    axes[0].text(i + width/2, row["AwayWinRate"] * 100 + 0.5,
+                 f"{row['AwayWinRate']*100:.0f}%", ha="center", fontsize=8, fontweight="bold")
+axes[0].set_xticks(x)
+axes[0].set_xticklabels(big6["Team"], rotation=20, ha="right", fontsize=9)
+axes[0].yaxis.set_major_formatter(mtick.PercentFormatter())
+axes[0].set_ylabel("Taux de victoire")
+axes[0].set_title("Taux de victoire", fontweight="bold")
+axes[0].legend()
+axes[0].set_ylim(0, 85)
+
+# Sous-graphe 2 : buts marqués moyens
+axes[1].bar(x - width/2, big6["AvgHomeGoals"], width,
+            color=COLORS["Home"], label="Buts marqués domicile", edgecolor="white")
+axes[1].bar(x + width/2, big6["AvgAwayGoals"], width,
+            color=COLORS["Away"], label="Buts marqués extérieur", edgecolor="white")
+for i, row in big6.iterrows():
+    axes[1].text(i - width/2, row["AvgHomeGoals"] + 0.02,
+                 f"{row['AvgHomeGoals']:.2f}", ha="center", fontsize=8, fontweight="bold")
+    axes[1].text(i + width/2, row["AvgAwayGoals"] + 0.02,
+                 f"{row['AvgAwayGoals']:.2f}", ha="center", fontsize=8, fontweight="bold")
+axes[1].set_xticks(x)
+axes[1].set_xticklabels(big6["Team"], rotation=20, ha="right", fontsize=9)
+axes[1].set_ylabel("Buts moyens par match")
+axes[1].set_title("Buts marqués en moyenne", fontweight="bold")
+axes[1].legend()
+axes[1].set_ylim(0, 3.0)
+
+fig.suptitle("Big Six — Domicile vs Extérieur (1993–2023)", fontsize=13, fontweight="bold")
+plt.tight_layout()
+plt.savefig("outputs/figures/07_big_six_home_vs_away.png", dpi=150)
+plt.close()
+print("→ Figure 7 sauvegardée")
+
+
+# =========================================================
+# 8) Résumé chiffré final
 # =========================================================
 print("\n" + "="*55)
 print("RÉSUMÉ DESCRIPTIF — AVANTAGE DOMICILE EN PL 1993–2023")
