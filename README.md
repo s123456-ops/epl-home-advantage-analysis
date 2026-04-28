@@ -62,6 +62,9 @@ src/
 
 outputs/
  ├── figures/
+
+ report/
+ ├── epl-home-advantage-analysis_report/
 ```
 
 ---
