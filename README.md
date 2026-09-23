@@ -85,6 +85,4 @@ The full report is available in the repository for detailed methodology and anal
 
 ## 👥 Authors
 
-* Salma Alaoui Mrani
-* Lara Cunha
-
+Salma Alaoui Mrani - Master Big Data, Analyse, Business Intelligence
